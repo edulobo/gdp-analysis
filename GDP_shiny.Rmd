@@ -1,0 +1,431 @@
+---
+title: "GDP Analysis"
+author: "Eduardo Lobo y María Santiago"
+date: "10/12/2020"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path="Figs/", message=FALSE, warning=FALSE,
+                      echo=FALSE, fig.width=11)
+
+
+```
+
+## Objetivo
+
+El objetivo de este análisis consiste en analizar un conjunto de indicadores socioeconómicos de distintos paises del mundo y contrastar su relación con la evolución del producto interior bruto (en inglés, GDP) a lo largo de los últimos años. Para ello usaremos el conjunto de datos **World Development Indicators** descargado de Kaggle, con +1300 indicadores recogidos para 247 países entre los años 1960 y 2015.
+
+## Leemos los datos
+
+```{r echo=FALSE, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(shiny)
+library(readxl)
+library(knitr)
+```
+
+
+```{r, message=FALSE}
+indicators = read.csv(file = "./Datos/Indicators.csv")
+```
+
+Cargamos nuestro conjunto de datos a partir del fichero csv descargado. Aprovechamos también para cargar todas las librerías que utilizaremos.
+
+## Ordenamos los datos
+
+Lo primero que vamos a hacer es echar un vistazo a los datos, para ver como están dispuestos y si hay datos ausentes:
+
+```{r, echo=FALSE}
+
+str(indicators)
+
+summary(indicators)
+
+```
+
+Tenemos un total de cinco millones y medio de observaciones aproximadamente. Observamos que las variables están clasificadas de forma correcta, los indicadores y los paises como caracteres, y los años y el valor del GDP como variables numéricas. Vamos a eliminar las variables **CountryCode** e **IndicatorCode** ya que no son necesarias para nuestro análisis.
+
+```{r, message=FALSE}
+indicators = indicators %>%
+  select(CountryName,IndicatorName,Year,Value)
+```
+
+Como siguiente paso vamos a ordenar los datos para que nuestro dataframe tenga el formato deseado (país, año, indicador), ya que en la tabla actual nuestros datos no pueden considerarse "tidy". En una misma columna tenemos registros de miles de variables distintas. Por tanto vamos a transformarlo para que cada indicador quede en una columna independiente . Para ello vamos a usar la librería tidyverse:
+
+```{r, message=FALSE}
+indicatorsTidy = indicators %>% 
+    pivot_wider(names_from = IndicatorName, values_from = Value)
+
+dim(indicatorsTidy)
+
+```
+
+El resultado es un dataframe con muchas menos filas, unas catorce mil observaciones aproximadamente (frente a cinco millones) pero con un incremento considerable de las columnas, unas mil trescientas (frente a cuatro columnas originales).
+
+## Selección de indicadores
+
+Para seleccionar que indicadores vamos a analizar vamos a basarnos en los principios de la teoría macroeconómica, donde existen dos definiciones de GDP:
+
+- Expenditure Approach: $$GDP = C (Consumption) + I (Private Investment) + G (Government Investment) + X (Exports) - M (Imports)$$
+
+- Income Approach: $$GDP = C (Consumption) + S (Private Savings) + T (Taxation)$$
+      
+De acuerdo a la relación fundamental de la teoría macroeconómica, ambas definiciones deben igualarse para obtener el punto de equilibrio:
+
+- Relación Fundamental: $$(S - I) = (G - T) + (X - M)$$
+      
+Por tanto, vamos a quedarnos con los indicadores que representen estos componentes y obtener valores relacionados con el GDP. Los indicadores que nos quedamos son:
+
+- 10. C02 Emissions (kt): contaminación como aproximación de una producción mayor en el país (X, I, G)
+- 26. Merchandise exports (US$): un buen estimador de la variable X
+- 38. Merchandise imports (US$): un buen estimador de la variable M
+- 76. Population, total: al disponer del dato del GDP per capita, tendremos en cuenta la tasa de crecimiento de los paises 
+- 85. GDP per capita (US$): será nuestra variable explicativa
+- 113. General Government Total Expenditure (US$): un buen estimador de la variable G
+- 139. Household final consumption expenditure (US$): un buen estimador de la variable C
+- 419. Adjusted Net National Income (US$): valor relacionado con la componente S, suponiendo una tasa de ahorro constante.
+- 939. Taxes on income and capital gains (% of revenue): un buen estimador de la variable T
+      
+```{r message=FALSE, results='hide'}
+indexIndicators = c(1,2,10,26,38,76,85,113,139,419,939)
+indicatorsShortlist = indicatorsTidy %>%
+  select(indexIndicators)
+
+dim(indicatorsShortlist)
+```
+
+## Transformación de Datos
+
+Para poder trabajar mejor con las tablas, vamos a empezar por renombrar las variables en nuestra tabla Shortlist.
+
+```{r}
+indFinal = rename(indicatorsShortlist, CO2 = "CO2 emissions (kt)")
+indFinal = rename(indFinal, EXPORTS = "Merchandise exports (current US$)")
+indFinal = rename(indFinal, IMPORTS = "Merchandise imports (current US$)")
+indFinal = rename(indFinal, POPULATION = "Population, total")
+indFinal = rename(indFinal, GDPPC = "GDP per capita (current US$)")
+indFinal = rename(indFinal, GOVERNMENT = "General government final consumption expenditure (current US$)")
+indFinal = rename(indFinal, CONSUMPTION = "Household final consumption expenditure (current US$)")
+indFinal = rename(indFinal, SAVINGS = "Adjusted net national income (current US$)")
+indFinal = rename(indFinal, TAXES = "Taxes on income, profits and capital gains (% of revenue)")
+```
+
+```{r echo=FALSE}
+summary(indFinal)
+```
+
+Vamos a reorganizar los datos para calcular una variable adicional GDP total, multiplicando GDPPC (que corresponde al GDP per capita) por la variable población y ordenando después la tabla en orden decreciente en función de esta nueva variable. Para facilitar su interpretación, vamos a dividir la variable para que su unidad básica sea billones americanos de dolares, es decir, dividir entre 1e+9.
+
+```{r}
+gdpTotal = indFinal %>%
+  mutate(GDP = GDPPC * POPULATION / 1e+9) %>%
+  arrange(desc(GDP))
+```
+
+Comprobamos que hay varios valores ausentes en la nueva variable GDP total, correspondientes a paises pequeños o fechas antiguas para las cuales no tenemos datos de alguna de las variables GDP per capita o poblacion.
+
+```{r}
+summary(gdpTotal$GDP)
+```
+Es un volumen considerable (3488), pero al tener un volumen total de muestras elevado (13831) consideramos adecuado eliminar estos valores ausentes.
+
+```{r}
+gdpTotal = gdpTotal[!is.na(gdpTotal$GDP), ]
+```
+
+## Variables cuantitativas continuas
+
+Vamos a analizar la frecuencia de nuestra variable explicativa GDP. A pesar de ser un valor económico, con un valor limitado de decimales, consideramos que debido al alto rango de valores distintos, en este ejercicio lo más correcto es tratar a esta variable como continua.
+
+Por tanto vamos a crear una serie de intervalos para observar donde se encuentran los distintos valores de esta variable.
+
+```{r orden, echo=FALSE, results= 'hide'}
+cortesGDP = c(0, 1, 500, 1000, 10000, 100000)
+
+gdpLevels = 
+  cut(gdpTotal$GDP, breaks = cortesGDP ,
+      labels = c("Less than 1 B$", "1-500 B$", "500-1000 B$", "1.000-10.000 B$", "More than 10.000 B$"),
+      include.lowest = TRUE)
+
+table(gdpLevels)
+```
+
+```{r echo=FALSE}
+barras = barplot((table(gdpLevels)))
+renderPlot({barras})
+
+```
+
+
+## Representación gráfica de variables
+
+Vamos a crear un subconjunto para analizar la evolución de los datos de un país específico, en este caso, India.
+
+```{r echo=FALSE}
+india = gdpTotal %>%
+  filter(CountryName == "India")
+```
+
+Vamos a representar graficamente la evolución de las variables con el paso de los años
+
+```{r echo=FALSE}
+ggplot(data = india) + 
+  geom_point(mapping = aes(x = Year, y = GDP))
+
+ggplot(data = india) + 
+  geom_point(mapping = aes(x = Year, y = POPULATION))
+
+ggplot(data = india) + 
+  geom_point(mapping = aes(x = Year, y = GOVERNMENT))
+
+```
+
+Observamos una clara tendencia alcista tanto para el nivel de GDP como para sus principales componentes.
+
+## Representación de los datos en shiny
+
+Para analizar otros países creamos una aplicación en shiny para permitir al usuario elegir otras combinaciones de países y variables.
+
+```{r echo = FALSE}
+shinyApp(
+  
+  ui=fluidPage(
+
+    sidebarLayout(
+                                                        
+    # Sidebar panel for inputs ----
+      sidebarPanel(
+                                                          
+            titlePanel("Filtros:"),
+                                                          
+            selectInput("var2", label = ("Selecciona el indicador del que quieres ver la relacion con la variable GDP:"),
+                        choices = list( "CO2" ,
+                                      "EXPORTS",
+                                      "IMPORTS" ,
+                                      "POPULATION",
+                                      "GOVERNMENT" , 
+                                      "CONSUMPTION",
+                                      "SAVINGS",
+                                      "TAXES",
+                                      "GDPPC"),
+                                selected = "CO2"),
+                                                                          
+          
+           sliderInput(inputId = "years", label = "selecciona el intervalo de años que deseas:",
+                                           min = 1960, 
+                                           max = 2010,
+                                          value = c(1960,2010)),
+          
+           checkboxGroupInput(inputId = "Regiones",
+                                                  label = "Selecciona una o varias regiones:",
+                                                  choices = c("Afghanistan","Albania","Algeria","Andorra","Angola","Antigua and Barbuda",
+                                                              "Argentina","Armenia","Australia","Austria","Azerbaijan","Bahamas","Bahrain",
+                                                              "Bangladesh","Barbados","Belarus","Belgium","Belize","Benin","Bhutan","Bolivia",
+                                                              "Bosnia and Herzegovina","Botswana","Brazil","Brunei","Bulgaria","Burkina Faso",
+                                                              "Burundi","Cambodia","Cameroon","Canada","Cape Verde","Central African Republic",
+                                                               "Chad","Chile","China","Colombia","Comoros","Congo","Congo, DRC","Costa Rica",
+                                                              "Cote d'Ivoire","Croatia","Cuba","Cyprus","Czech Republic","Denmark","Djibouti",
+                                                              "Dominica","Dominican Republic","Ecuador","Egypt","El Salvador","Equatorial Guinea",
+                                                              "Eritrea","Estonia","Ethiopia","Fiji","Finland","France","Gabon","Georgia","Germany",
+                                                              "Ghana","Greece","Grenada","Guatemala","Guinea","Guinea-Bissau","Guyana","Haiti",
+                                                              "Honduras","Hungary","Iceland","India","Indonesia","Iran","Iraq","Ireland","Israel",
+                                                              "Italy","Jamaica","Japan","Jordan","Kazakhstan","Kenya","Kiribati","Kosovo","Kuwait",
+                                                              "Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho","Liberia","Libya","Liechtenstein",
+                                                              "Lithuania","Luxembourg","Macedonia","Madagascar","Malawi","Malaysia","Maldives",
+                                                              "Mali","Malta","Marshall Is.","Mauritania","Mauritius","Mexico","Micronesia","Moldova",
+                                                              "Monaco","Mongolia","Montenegro","Morocco","Mozambique","Myanmar","Namibia","Nauru",
+                                                              "Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea",
+                                                              "Norway","Oman","Pakistan","Palau","Panama","Papua New Guinea","Paraguay","Peru",
+                                                              "Philippines","Poland","Portugal","Qatar","Romania","Russia","Rwanda","Samoa",
+                                                              "San Marino","Sao Tome and Principe","Saudi Arabia","Senegal","Serbia","Seychelles",
+                                                              "Sierra Leone","Singapore","Slovakia","Slovenia","Solomon Is.","Somalia","South Africa",
+                                                              "South Korea","South Sudan","Spain","Sri Lanka","St. Kitts and Nevis","St. Lucia",
+                                                              "St. Vincent and the Grenadines","Sudan","Suriname","Swaziland","Sweden","Switzerland","
+                                                   Syria","Taiwan","Tajikistan","Tanzania","Thailand","The Gambia","Timor Leste","Togo",
+                                                              "Tonga","Trinidad and Tobago","Tunisia","Turkey","Turkmenistan","Tuvalu","Uganda",
+                                                              "Ukraine","United Arab Emirates","United Kingdom","United States","Uruguay",
+                                                              "Uzbekistan","Vanuatu","Venezuela","Vietnam","Yemen","Zambia","Zimbabwe"))
+      ),
+      mainPanel(
+            h4("Relacion entre todos el indicador seleccionado y GDP"),
+            plotOutput(outputId = "relacion")    
+          )
+    )
+  ),
+  
+                            
+  server = function(input, output) {
+    
+    
+    output$relacion <- renderPlot({
+      
+      if (length(input$Regiones) == 0 ){
+        gdpTotal = gdpTotal %>%
+          filter ( Year >= input$years[1] & Year <= input$years[2])
+        
+        ggplot() + 
+          geom_point(data = gdpTotal, aes(x = GDP, y = switch(input$var2, 
+                                                              "CO2" = gdpTotal$CO2 ,
+                                                              "EXPORTS"  = gdpTotal$EXPORTS,
+                                                              "IMPORTS" = gdpTotal$IMPORTS,
+                                                              "POPULATION"  = gdpTotal$POPULATION,
+                                                              "GOVERNMENT" = gdpTotal$GOVERNMENT, 
+                                                              "CONSUMPTION" = gdpTotal$CONSUMPTION,
+                                                              "SAVINGS" = gdpTotal$SAVINGS,
+                                                              "TAXES" = gdpTotal$TAXES,
+                                                              "GDPPC" = gdpTotal$GDPPC), colour = gdpTotal$CountryName)) +
+          labs(x = "GDP",y = input$var2)+
+          theme_minimal()
+        
+      }else{
+        
+        gdpTotal = gdpTotal %>%
+          filter (CountryName %in% input$Regiones)  %>%
+          filter ( Year >= input$years[1] & Year <= input$years[2])
+        
+        
+        ggplot() + 
+          geom_point(data = gdpTotal, aes(x = GDP, y = switch(input$var2, 
+                                                              "CO2" = gdpTotal$CO2 ,
+                                                              "EXPORTS"  = gdpTotal$EXPORTS,
+                                                              "IMPORTS" = gdpTotal$IMPORTS,
+                                                              "POPULATION"  = gdpTotal$POPULATION,
+                                                              "GOVERNMENT" = gdpTotal$GOVERNMENT, 
+                                                              "CONSUMPTION" = gdpTotal$CONSUMPTION,
+                                                              "SAVINGS" = gdpTotal$SAVINGS,
+                                                              "TAXES" = gdpTotal$TAXES), colour = gdpTotal$CountryName)) + 
+          labs(x = "GDP",y = input$var2) +
+          theme_minimal()
+        
+      }
+      
+    })
+  }
+)
+
+
+
+
+
+```
+      
+## Valores centrales y dispersión
+
+Vamos a analizar ahora un subconjunto de un mismo año para distintos paises. Seleccionamos el año 2010.
+
+```{r }
+paises2010 = gdpTotal %>%
+  filter(Year == "2010")
+```
+
+Para este año, tenemos un total de 228 registros. Vamos a analizar las distintas medidas de valores centrales para la población de este subconjunto.
+
+```{r}
+mean(paises2010$POPULATION)
+```
+La media aritmética de la población es de 210 millones aproxiamadamente. Al tener valores atípicos muy pronunciados, con países como China o India, comprobamos el principal defecto de la media aritmética, su alta sensibilidad frente a valores anormalmente grandes o pequeños. Calculamos la mediana para tener una medida que corrija este problema.
+
+```{r}
+median(paises2010$POPULATION)
+```
+Observamos que la mediana de la población es de tan solo 9.5 millones aproximadamente, ya que la mitad de los países censados tienen poblaciones pequeñas (inferiores a 10 millones de habitantes). Podemos analizar los cuartiles de esta variable.
+
+```{r}
+quantile(paises2010$POPULATION)
+```
+Observamos que países como España o Francia estarían cerca del tercer cuartil en cuanto a tamaño de población. Es decir, estarían en el top 25% de países con poblaciones más grandes del mundo. Vamos a medir ahora lo que antes hemos observado a ojo, la presencia de valores atípicos.
+
+```{r}
+unname(quantile(paises2010$POPULATION, probs = c(1/4, 3/4)) + c(-1,1) * 1.5 * IQR(paises2010$POPULATION))
+```
+A partir del IQR, determinamos a partir de que valores consideraremos atípicas nuestras poblaciones. En el limite inferior, vemos que nunca tendremos valores atípicos, ya que el valor de una población no puede ser negativo, mientras que para el limite superior a partir de 111 millones aproximadamente consideraremos atípico el valor de la población.
+
+```{r echo=FALSE}
+box_pop = boxplot(paises2010$POPULATION, horizontal = TRUE, main = "Population 2010")
+```
+Pintando un boxplot apreciamos la dimensión de los valores atípicos de nuestro conjunto de datos. Vamos a ver que países son los outliers para ver si los podemos quitar o no:
+
+```{r echo = FALSE}
+outliers = box_pop$out
+sort(outliers)
+```
+
+```{r}
+paises2010[which(paises2010$POPULATION >= min(outliers)),]
+```
+
+
+Observamos que algunos de estos países corresponden a agrupaciones de varios conjuntos, como por ejemplo Middle East $ North Africa. Si todos los valores correspondieran a esta tipología podríamos eliminar estos outliers, pero al estar mezclados con países como China, Japon o Pakistan, no tenemos un criterio con estas variables para eliminarlos de manera automática.
+
+## Medias Muestrales
+
+Continuando con nuestras poblaciones de 2010, vamos a comprobar ahora el teorema central del limite. Vamos a seleccionar varias muestras y calcular la media de cada una de esas muestras.
+
+```{r echo=FALSE}
+k = 10000
+mediasMuestrales = replicate(k, { 
+  muestra = sample(paises2010$POPULATION, 40, replace = TRUE)
+  mean(muestra)
+})
+
+hist(mediasMuestrales, breaks = 40, main="", 
+     col="peachpuff", probability = TRUE)
+lines(density(paises2010$POPULATION), lwd=4, col="blue")
+```
+
+Al partir de un espacio no demasiado grande ya que el número de países es finito y limitado a poco más de 200 valores, no podemos seleccionar distintas muestras de gran tamaño, por lo que la distribución resultante no parece estrictamente normal y podríamos ver todavía un poco de asimetría a la derecha, con una cola más larga. Aun así, no cabe duda que el resultado es una distribución mucho más parecida a una distribución normal que la línea de densidad azul, correspondiente a la población original.
+
+## Regresión lineal
+
+Vamos a aislar otro país distinto para intentar predecir su valor del GDP de los años próximos a donde acaba nuestra muestra. En este caso hemos elegido España.
+
+```{r}
+spain = gdpTotal %>%
+  filter(CountryName == "Spain")
+```
+
+Procedemos a comparar distintos modelos, combinando distintas variables de entrada. Utilizamos las variables exportaciones, deficit gubernamental y emisiones de C02. Vamos a hacer la representación gráfica del primer modelo, correspondiente a la variable exportaciones.
+
+```{r echo=FALSE}
+gdpvsExp = lm(GDP ~ EXPORTS, data = spain)
+gdpvsGov = lm(GDP ~ GOVERNMENT, data = spain)
+gdpvsCO2 = lm(GDP ~ CO2, data = spain)
+
+b0e = gdpvsExp$coefficients[1]
+b1e = gdpvsExp$coefficients[2]
+b0g = gdpvsGov$coefficients[1]
+b1g = gdpvsGov$coefficients[2]
+b0c = gdpvsCO2$coefficients[1]
+b1c = gdpvsCO2$coefficients[2]
+
+plt = ggplot(spain) +
+  geom_point(aes(EXPORTS, GDP), col = "darkgreen") +
+  geom_abline(intercept = b0e, slope = b1e, color="blue", size = 1.5)
+
+(plt)
+```
+
+Vamos a realizar tres predicciones del valor GDP en España para el año 2019, metiendo como dato de entrada los valores reales para ese año:
+
+- Exports(2019) = 333622000000$ 
+- Goverment Spending (2019) = 261104000000$
+- C02 Emissions (2019) = 244002 kt
+
+```{r echo = FALSE}
+ export_pred = predict(gdpvsExp, newdata = data.frame(EXPORTS = 333622000000))
+ gover_pred = predict(gdpvsGov, newdata = data.frame(GOVERNMENT = 261104000000))
+co2_pred = predict(gdpvsCO2, newdata = data.frame(CO2 = 244002))
+```
+Las predicciones de la variable GDP que hemos obtenido con cada uno de los indicadores son:
+
+- Exports(2019): ```r export_pred``` 
+- Goverment Spending (2019): ```r gover_pred```
+- C02 Emissions (2019): ```r co2_pred```
+
+
+Obtenemos las tres predicciones y lo comparamos con el valor real del GDP para España para el año 2019, obtenido de la base de datos **trading economics**. El GDP (2019) es igual a 1394.12 billones americanos de dolares.
+
+Con esto podemos concluir que de los tres modelos, la relación lineal entre exportaciones y GDP proporciona unas predicciones sobreponderadas, justo el efecto contrario de la variable C02 con GDP. La predicción más cercana a la realidad la obtenemos con la variable del gasto gubernamental, con la cual obtenemos un GDP estimado de 1379.21 frente al valor real de 1394.12.
